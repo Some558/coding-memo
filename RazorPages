@@ -1,0 +1,198 @@
+## 1. Identity導入
+
+**Program.cs**:
+```csharp
+// Identity設定
+builder.Services.AddDbContext<ApplicationDbContext>(options =>
+    options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+builder.Services.AddDefaultIdentity<ApplicationUser>(options => 
+    options.SignIn.RequireConfirmedAccount = false)
+    .AddRoles<IdentityRole>()
+    .AddEntityFrameworkStores<ApplicationDbContext>();
+```
+
+## 2. カスタムユーザークラス作成
+
+**Models/ApplicationUser.cs**:
+```csharp
+public class ApplicationUser : IdentityUser
+{
+    // 共通の追加プロパティ（必要なら）
+    public string FullName { get; set; }
+    
+    // ナビゲーションプロパティ
+    public virtual UserProfile UserProfile { get; set; }
+    public virtual AdminProfile AdminProfile { get; set; }
+}
+```
+
+## 3. 関連テーブルの作成
+
+**Models/UserProfile.cs**:
+```csharp
+public class UserProfile
+{
+    public int Id { get; set; }
+    public string UserId { get; set; }  // 外部キー
+    public string Address { get; set; }
+    public string PhoneNumber { get; set; }
+    // 他の一般ユーザープロパティ
+    
+    public ApplicationUser User { get; set; }  // ナビゲーションプロパティ
+}
+```
+
+**Models/AdminProfile.cs**:
+```csharp
+public class AdminProfile
+{
+    public int Id { get; set; }
+    public string UserId { get; set; }  // 外部キー
+    public string Department { get; set; }
+    public int SecurityLevel { get; set; }
+    // 他の管理者プロパティ
+    
+    public ApplicationUser User { get; set; }  // ナビゲーションプロパティ
+}
+```
+
+## 4. DbContext設定
+
+**Data/ApplicationDbContext.cs**:
+```csharp
+public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
+{
+    public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options)
+        : base(options)
+    {
+    }
+    
+    public DbSet<UserProfile> UserProfiles { get; set; }
+    public DbSet<AdminProfile> AdminProfiles { get; set; }
+    
+    protected override void OnModelCreating(ModelBuilder builder)
+    {
+        base.OnModelCreating(builder);
+        
+        // リレーションシップの設定
+        builder.Entity<UserProfile>()
+            .HasOne(up => up.User)
+            .WithOne(u => u.UserProfile)
+            .HasForeignKey<UserProfile>(up => up.UserId);
+            
+        builder.Entity<AdminProfile>()
+            .HasOne(ap => ap.User)
+            .WithOne(u => u.AdminProfile)
+            .HasForeignKey<AdminProfile>(ap => ap.UserId);
+    }
+}
+```
+
+## 5. ロールの作成
+
+**Data/SeedData.cs**:
+```csharp
+public static class SeedData
+{
+    public static async Task Initialize(IServiceProvider serviceProvider)
+    {
+        var roleManager = serviceProvider.GetRequiredService<RoleManager<IdentityRole>>();
+        
+        // ロールの作成
+        string[] roles = { "Admin", "User" };
+        foreach (var role in roles)
+        {
+            if (!await roleManager.RoleExistsAsync(role))
+            {
+                await roleManager.CreateAsync(new IdentityRole(role));
+            }
+        }
+    }
+}
+```
+
+**Program.cs** (追加):
+```csharp
+// アプリの設定後、実行前
+using (var scope = app.Services.CreateScope())
+{
+    await SeedData.Initialize(scope.ServiceProvider);
+}
+```
+
+## 6. ユーザー登録時にロールとプロフィール作成
+
+**Register.cshtml.cs** (OnPostAsync内):
+```csharp
+// ユーザー作成
+var user = new ApplicationUser
+{
+    UserName = Input.Email,
+    Email = Input.Email,
+    FullName = Input.FullName
+};
+
+var result = await _userManager.CreateAsync(user, Input.Password);
+
+if (result.Succeeded)
+{
+    // ロール追加（例：フォームから選択）
+    if (Input.IsAdmin)
+    {
+        await _userManager.AddToRoleAsync(user, "Admin");
+        
+        // 管理者プロフィール作成
+        var adminProfile = new AdminProfile
+        {
+            UserId = user.Id,
+            Department = Input.Department,
+            SecurityLevel = 1
+        };
+        _context.AdminProfiles.Add(adminProfile);
+    }
+    else
+    {
+        await _userManager.AddToRoleAsync(user, "User");
+        
+        // 一般ユーザープロフィール作成
+        var userProfile = new UserProfile
+        {
+            UserId = user.Id,
+            Address = Input.Address,
+            PhoneNumber = Input.PhoneNumber
+        };
+        _context.UserProfiles.Add(userProfile);
+    }
+    
+    await _context.SaveChangesAsync();
+    // ログイン処理など
+}
+```
+
+## 7. ユーザー情報取得例
+
+```csharp
+// ユーザーとプロフィール情報を取得
+var user = await _userManager.FindByIdAsync(userId);
+var roles = await _userManager.GetRolesAsync(user);
+
+if (roles.Contains("Admin"))
+{
+    // 管理者の場合、AdminProfileを取得
+    var adminProfile = await _context.AdminProfiles
+        .FirstOrDefaultAsync(ap => ap.UserId == userId);
+        
+    // 管理者用の処理
+}
+else
+{
+    // 一般ユーザーの場合、UserProfileを取得
+    var userProfile = await _context.UserProfiles
+        .FirstOrDefaultAsync(up => up.UserId == userId);
+        
+    // 一般ユーザー用の処理
+}
+```
+
+これで基本的な流れは完了です。マイグレーションを作成して実行することで、データベースに必要なテーブルが作成されます。
