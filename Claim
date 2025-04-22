@@ -1,0 +1,100 @@
+ASP.NET Coreでは、カスタムの認証情報をCookieに保存することが可能です。標準のIdentityを使わなくても、自分で作成したAdminUserモデルでログイン認証を実装できます。
+
+### カスタム認証の実装方法
+
+1. **認証サービスの設定**
+
+```csharp
+// Startup.cs または Program.cs
+builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
+    .AddCookie(options =>
+    {
+        options.LoginPath = "/Account/Login";
+        options.AccessDeniedPath = "/Account/AccessDenied";
+        options.ExpireTimeSpan = TimeSpan.FromDays(1); // Cookie有効期間
+    });
+```
+
+2. **ログイン処理の実装**
+
+```csharp
+public async Task<IActionResult> Login(LoginViewModel model)
+{
+    // データベースからユーザー検索
+    var adminUser = await _context.AdminUsers
+        .FirstOrDefaultAsync(u => u.UserId == model.UserId);
+    
+    if (adminUser != null && VerifyPassword(model.Password, adminUser.PasswordHash))
+    {
+        // クレームを作成（認証情報）
+        var claims = new List<Claim>
+        {
+            new Claim(ClaimTypes.Name, adminUser.UserId),
+            new Claim(ClaimTypes.Role, "Admin"),
+            new Claim("AdminId", adminUser.Id.ToString())
+        };
+        
+        // 認証プロパティの設定
+        var authProperties = new AuthenticationProperties
+        {
+            IsPersistent = model.RememberMe, // 永続的Cookieにするか
+            ExpiresUtc = DateTimeOffset.UtcNow.AddDays(7) // 有効期限
+        };
+        
+        // クレーム識別子を作成
+        var claimsIdentity = new ClaimsIdentity(
+            claims, CookieAuthenticationDefaults.AuthenticationScheme);
+        
+        // サインイン実行（Cookieの作成）
+        await HttpContext.SignInAsync(
+            CookieAuthenticationDefaults.AuthenticationScheme,
+            new ClaimsPrincipal(claimsIdentity),
+            authProperties);
+        
+        return RedirectToAction("Index", "Home");
+    }
+    
+    ModelState.AddModelError("", "ユーザーIDまたはパスワードが正しくありません。");
+    return View(model);
+}
+```
+
+3. **ログアウト処理**
+
+```csharp
+public async Task<IActionResult> Logout()
+{
+    await HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+    return RedirectToAction("Index", "Home");
+}
+```
+
+### ログイン状態の確認とユーザー情報の表示
+
+ログイン状態は `User.Identity.IsAuthenticated` で確認でき、Cookie から取得したユーザーIDを表示するには：
+
+```cshtml
+@if (User.Identity.IsAuthenticated)
+{
+    <div>
+        <p>ようこそ @User.Identity.Name さん</p>
+        
+        @if (User.IsInRole("Admin"))
+        {
+            <p>管理者としてログインしています</p>
+        }
+        
+        <form asp-controller="Account" asp-action="Logout" method="post">
+            <button type="submit">ログアウト</button>
+        </form>
+    </div>
+}
+else
+{
+    <div>
+        <a asp-controller="Account" asp-action="Login">ログイン</a>
+    </div>
+}
+```
+
+このようにして、ASP.NET Coreの標準的な認証システムを使いながら、独自のユーザーモデルでログイン認証を実装できます。ログイン情報はCookieに暗号化して保存され、各リクエストごとに自動的に復号化されて `User` オブジェクトとして利用可能になります。
